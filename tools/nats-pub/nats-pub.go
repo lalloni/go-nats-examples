@@ -14,11 +14,15 @@
 package main
 
 import (
+	"encoding/hex"
 	"flag"
+	"io"
 	"log"
 	"os"
 
 	"github.com/nats-io/nats.go"
+
+	"../../helpers"
 )
 
 // NOTE: Can test with demo servers.
@@ -67,14 +71,37 @@ func main() {
 		log.Fatal(err)
 	}
 	defer nc.Close()
-	subj, msg := args[0], []byte(args[1])
 
-	nc.Publish(subj, msg)
+	subj := args[0]
+
+	if len(args) > 1 {
+		for _, arg := range args[1:] {
+			text, msg, err := helpers.Bytes(arg)
+			if err != nil {
+				log.Fatal(err)
+			}
+			nc.Publish(subj, msg)
+			logPub(text, subj, msg)
+		}
+	} else {
+		msg, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			log.Fatal(err)
+		}
+		nc.Publish(subj, msg)
+		logPub(false, subj, msg)
+	}
+
 	nc.Flush()
 
 	if err := nc.LastError(); err != nil {
 		log.Fatal(err)
-	} else {
-		log.Printf("Published [%s] : '%s'\n", subj, msg)
 	}
+}
+
+func logPub(text bool, subj string, msg []byte) {
+	if !text {
+		msg = []byte(hex.EncodeToString(msg))
+	}
+	log.Printf("Published [%s] : '%s'", subj, msg)
 }

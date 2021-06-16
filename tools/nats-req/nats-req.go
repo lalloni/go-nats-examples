@@ -14,9 +14,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/ascii85"
+	"encoding/base64"
+	"encoding/hex"
 	"flag"
+	"io"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -40,6 +46,7 @@ func main() {
 	var urls = flag.String("s", nats.DefaultURL, "The nats server URLs (separated by comma)")
 	var userCreds = flag.String("creds", "", "User Credentials File")
 	var showHelp = flag.Bool("h", false, "Show help message")
+	var stdout = flag.Bool("o", false, "Write raw response to stdout")
 
 	log.SetFlags(0)
 	flag.Usage = usage
@@ -68,16 +75,76 @@ func main() {
 		log.Fatal(err)
 	}
 	defer nc.Close()
-	subj, payload := args[0], []byte(args[1])
+	subj := args[0]
 
-	msg, err := nc.Request(subj, payload, 2*time.Second)
-	if err != nil {
-		if nc.LastError() != nil {
-			log.Fatalf("%v for request", nc.LastError())
+	if len(args) > 1 {
+		for _, arg := range args[1:] {
+			text, payload, err := prepare(arg)
+			if err != nil {
+				log.Fatal(err)
+			}
+			msg, err := nc.Request(subj, payload, 2*time.Second)
+			if err != nil {
+				if nc.LastError() != nil {
+					log.Fatalf("%v for request", nc.LastError())
+				}
+				log.Fatalf("%v for request", err)
+			}
+			logPub(*stdout, text, subj, payload, msg)
 		}
-		log.Fatalf("%v for request", err)
+	} else {
+		payload, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			log.Fatal(err)
+		}
+		msg, err := nc.Request(subj, payload, 2*time.Second)
+		if err != nil {
+			if nc.LastError() != nil {
+				log.Fatalf("%v for request", nc.LastError())
+			}
+			log.Fatalf("%v for request", err)
+		}
+		logPub(*stdout, false, subj, payload, msg)
 	}
 
+}
+
+func logPub(stdout, text bool, subj string, payload []byte, msg *nats.Msg) {
+	if !text {
+		payload = []byte(hex.EncodeToString(payload))
+	}
 	log.Printf("Published [%s] : '%s'", subj, payload)
-	log.Printf("Received  [%v] : '%s'", msg.Subject, string(msg.Data))
+	if stdout {
+		log.Printf("Received  [%v] : %d bytes", msg.Subject, len(msg.Data))
+		_, _ = io.Copy(os.Stdout, bytes.NewReader(msg.Data))
+	} else {
+		log.Printf("Received  [%v] : '%s'", msg.Subject, string(msg.Data))
+	}
+}
+
+const (
+	hexPrefix = "hex:"
+	b64Prefix = "b64:"
+	a85Prefix = "a85:"
+)
+
+func prepare(arg string) (bool, []byte, error) {
+	if strings.HasPrefix(arg, "@") {
+		bs, err := os.ReadFile(strings.TrimPrefix(arg, "@"))
+		return false, bs, err
+	}
+	if strings.HasPrefix(arg, hexPrefix) {
+		bs, err := hex.DecodeString(strings.TrimPrefix(arg, hexPrefix))
+		return false, bs, err
+	}
+	if strings.HasPrefix(arg, b64Prefix) {
+		bs, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(arg, b64Prefix))
+		return false, bs, err
+	}
+	if strings.HasPrefix(arg, a85Prefix) {
+		var bs []byte
+		_, err := ascii85.NewDecoder(strings.NewReader(strings.TrimPrefix(arg, a85Prefix))).Read(bs)
+		return false, bs, err
+	}
+	return true, []byte(arg), nil
 }
